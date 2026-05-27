@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { BarChart, Bar, Cell, LabelList, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from "recharts";
 
 const METHODS = ["Jacobi", "Gauss-Seidel", "SOR"];
 const ERROR_TYPES = ["Relativo", "Absoluto", "Condición"];
@@ -11,6 +11,40 @@ function parseMatrix(text) {
 
 function parseVector(text) {
   return text.trim().split(/[\s,]+/).map(Number);
+}
+
+// Calcula los 3 tipos de error para un par (x, xOld)
+function calcAllErrors(x, xOld, A, b) {
+  // Absoluto: max diferencia entre iteraciones
+  const absoluto = Math.max(...x.map((v, i) => Math.abs(v - xOld[i])));
+
+  // Relativo: absoluto / max(|x|)
+  const maxX = Math.max(...x.map(v => Math.abs(v)));
+  const relativo = maxX === 0 ? absoluto : absoluto / maxX;
+
+  // Condición: norma del residual ||b - Ax||
+  const res = A.map((row, i) => b[i] - row.reduce((s, v, j) => s + v * x[j], 0));
+  const condicion = Math.sqrt(res.reduce((s, v) => s + v ** 2, 0));
+
+  return {
+    Relativo:  isFinite(relativo)  && relativo  > 0 ? relativo  : null,
+    Absoluto:  isFinite(absoluto)  && absoluto  > 0 ? absoluto  : null,
+    Condicion: isFinite(condicion) && condicion > 0 ? condicion : null,
+  };
+}
+
+// Error simple para criterio de parada
+function calcError(x, xOld, A, b, errType) {
+  if (errType === "Relativo") {
+    const maxX = Math.max(...x.map(v => Math.abs(v)));
+    const delta = Math.max(...x.map((v, i) => Math.abs(v - xOld[i])));
+    return maxX === 0 ? delta : delta / maxX;
+  }
+  if (errType === "Absoluto") {
+    return Math.max(...x.map((v, i) => Math.abs(v - xOld[i])));
+  }
+  const res = A.map((row, i) => b[i] - row.reduce((s, v, j) => s + v * x[j], 0));
+  return Math.sqrt(res.reduce((s, v) => s + v ** 2, 0));
 }
 
 function runIterative(A, b, method, w, x0, tol, maxIter, errType) {
@@ -33,24 +67,16 @@ function runIterative(A, b, method, w, x0, tol, maxIter, errType) {
       }
     }
     const err = calcError(x, xOld, A, b, errType);
-    rows.push({ iter: k, ...Object.fromEntries(x.map((v, i) => [`x${i+1}`, +v.toFixed(6)])), error: isFinite(err) ? +err.toFixed(8) : "---" });
+    const allErr = calcAllErrors(x, xOld, A, b);
+    rows.push({
+      iter: k,
+      ...Object.fromEntries(x.map((v, i) => [`x${i+1}`, +v.toFixed(6)])),
+      error: isFinite(err) ? +err.toFixed(8) : "---",
+      ...allErr
+    });
     if (isFinite(err) && err < tol) break;
   }
   return { rows, x };
-}
-
-function calcError(x, xOld, A, b, errType) {
-  if (errType === "Relativo") {
-    const maxX = Math.max(...x.map(v => Math.abs(v)));
-    const delta = Math.max(...x.map((v, i) => Math.abs(v - xOld[i])));
-    return maxX === 0 ? delta : delta / maxX;
-  }
-  if (errType === "Absoluto") {
-    return Math.max(...x.map((v, i) => Math.abs(v - xOld[i])));
-  }
-  // Condición: residual
-  const res = A.map((row, i) => b[i] - row.reduce((s, v, j) => s + v * x[j], 0));
-  return Math.sqrt(res.reduce((s, v) => s + v ** 2, 0));
 }
 
 function spectralRadius(A, method, w) {
@@ -58,8 +84,6 @@ function spectralRadius(A, method, w) {
   const D = A.map((r, i) => r.map((v, j) => i === j ? v : 0));
   const L = A.map((r, i) => r.map((v, j) => j < i ? -v : 0));
   const U = A.map((r, i) => r.map((v, j) => j > i ? -v : 0));
-
-  // T matrix
   let T;
   if (method === "Jacobi") {
     const Dinv = D.map((r, i) => r.map((v, j) => i === j ? 1 / v : 0));
@@ -79,7 +103,6 @@ function spectralRadius(A, method, w) {
 
 function matAdd(A, B) { return A.map((r, i) => r.map((v, j) => v + B[i][j])); }
 function matMul(A, B) {
-  const n = A.length;
   return A.map(r => B[0].map((_, j) => r.reduce((s, v, k) => s + v * B[k][j], 0)));
 }
 function matInv(M) {
@@ -87,7 +110,11 @@ function matInv(M) {
   const aug = M.map((r, i) => [...r, ...Array.from({ length: n }, (_, j) => i === j ? 1 : 0)]);
   for (let i = 0; i < n; i++) {
     let pivot = aug[i][i];
-    if (Math.abs(pivot) < 1e-12) { for (let k = i+1; k < n; k++) if (Math.abs(aug[k][i]) > Math.abs(pivot)) { [aug[i], aug[k]] = [aug[k], aug[i]]; pivot = aug[i][i]; break; } }
+    if (Math.abs(pivot) < 1e-12) {
+      for (let k = i+1; k < n; k++) {
+        if (Math.abs(aug[k][i]) > Math.abs(pivot)) { [aug[i], aug[k]] = [aug[k], aug[i]]; pivot = aug[i][i]; break; }
+      }
+    }
     aug[i] = aug[i].map(v => v / pivot);
     for (let k = 0; k < n; k++) if (k !== i) { const f = aug[k][i]; aug[k] = aug[k].map((v, j) => v - f * aug[i][j]); }
   }
@@ -112,7 +139,6 @@ const DEFAULT_B = "15\n10\n10";
 
 export default function Chapter2() {
   const [method, setMethod] = useState("Gauss-Seidel");
-  const [size, setSize] = useState(3);
   const [matA, setMatA] = useState(DEFAULT_A);
   const [vecB, setVecB] = useState(DEFAULT_B);
   const [x0, setX0] = useState("0 0 0");
@@ -137,30 +163,35 @@ export default function Chapter2() {
       const t = parseFloat(tol), m = parseInt(maxIter), wVal = parseFloat(w);
       const res = runIterative(A, b, method, wVal, x0Vec, t, m, errType);
       setResult({ ...res, n });
-      const rhoVal = spectralRadius(A, method, wVal);
-      setRho(rhoVal);
+      setRho(spectralRadius(A, method, wVal));
+      setCompData([]); // limpiar comparativa
     } catch (e) { setError("Error: " + e.message); }
   };
 
+  // Comparativa: 3 líneas (Relativo, Absoluto, Condición) por iteración del método actual
   const runComparison = () => {
+    setError("");
     try {
       const A = parseMatrix(matA);
       const b = parseMatrix(vecB).flat();
-      const t = parseFloat(tol), m = parseInt(maxIter), wVal = parseFloat(w);
       const x0Vec = parseVector(x0);
-      const methods = [
-        { name: "Jacobi", res: runIterative(A, b, "Jacobi", 1, x0Vec, t, m, errType) },
-        { name: "Gauss-Seidel", res: runIterative(A, b, "Gauss-Seidel", 1, x0Vec, t, m, errType) },
-        { name: "SOR", res: runIterative(A, b, "SOR", wVal, x0Vec, t, m, errType) },
-      ];
-      const comp = methods.map(({ name, res }) => {
-        const last = res.rows[res.rows.length - 1];
-        const finalError = last && typeof last.error === "number" && isFinite(last.error) ? last.error : null;
-        return { name, error: finalError };
-      });
-      console.log("Chapter2 comparison data:", comp);
-      setCompData(comp);
-    } catch (e) { setError("Error comparación: " + e.message); }
+      const n = A.length;
+      if (A.some(r => r.length !== n) || b.length !== n) throw new Error("Dimensiones incorrectas");
+      const t = parseFloat(tol), m = parseInt(maxIter), wVal = parseFloat(w);
+      const { rows } = runIterative(A, b, method, wVal, x0Vec, t, m, errType);
+
+      // Saltar iter 0 (sin error previo)
+      const data = rows
+        .filter(row => row.iter > 0)
+        .map(row => ({
+          iter: row.iter,
+          Relativo:  row.Relativo  !== null && row.Relativo  > 0 ? row.Relativo  : null,
+          Absoluto:  row.Absoluto  !== null && row.Absoluto  > 0 ? row.Absoluto  : null,
+          Condicion: row.Condicion !== null && row.Condicion > 0 ? row.Condicion : null,
+        }));
+
+      setCompData(data);
+    } catch (e) { setError("Error en comparación: " + e.message); }
   };
 
   const cols = result ? ["iter", ...Array.from({ length: result.n }, (_, i) => `x${i+1}`), "error"] : [];
@@ -175,7 +206,7 @@ export default function Chapter2() {
       {/* Method selector */}
       <div style={{ display: "flex", gap: 8 }}>
         {METHODS.map(m => (
-          <button key={m} onClick={() => setMethod(m)} style={{
+          <button key={m} onClick={() => { setMethod(m); setResult(null); setCompData([]); }} style={{
             background: method === m ? "#4ecdc422" : "var(--bg3)",
             color: method === m ? "#4ecdc4" : "var(--text2)",
             border: method === m ? "1px solid #4ecdc444" : "1px solid var(--border)",
@@ -189,7 +220,6 @@ export default function Chapter2() {
       <div style={{ background: "#4ecdc411", border: "1px solid #4ecdc433", borderRadius: 10, padding: "12px 16px", fontSize: 13, color: "#7eddd8" }}>
         💡 Ingresa la matriz A fila por fila (valores separados por espacios) y el vector b, uno por línea.
         Tamaño máximo: 8×8.
-        <br />Para el método de Jacobi usa <strong>Error Absoluto</strong> si quieres el "mayor delta" entre iteraciones como en la tabla del profe.
         {method === "SOR" && " Para SOR se recomienda w ∈ (1, 2) para acelerar convergencia."}
       </div>
 
@@ -206,7 +236,7 @@ export default function Chapter2() {
           </label>
           <label style={{ display: "flex", flexDirection: "column", gap: 6 }}>
             <span style={{ fontSize: 12, color: "var(--text2)", fontFamily: "var(--mono)" }}>Vector inicial x₀</span>
-            <input value={x0} onChange={e => setX0(e.target.value)} placeholder="2 2 2 2" />
+            <input value={x0} onChange={e => setX0(e.target.value)} placeholder="0 0 0" />
           </label>
         </div>
         <div style={{ background: "var(--bg2)", borderRadius: 12, padding: 20, border: "1px solid var(--border)", display: "flex", flexDirection: "column", gap: 12 }}>
@@ -225,13 +255,13 @@ export default function Chapter2() {
             <input value={maxIter} onChange={e => setMaxIter(e.target.value)} />
           </label>
           <label style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-            <span style={{ fontSize: 12, color: "var(--text2)", fontFamily: "var(--mono)" }}>Tipo de error</span>
+            <span style={{ fontSize: 12, color: "var(--text2)", fontFamily: "var(--mono)" }}>Tipo de error (criterio parada)</span>
             <select value={errType} onChange={e => setErrType(e.target.value)}>
               {ERROR_TYPES.map(e => <option key={e}>{e}</option>)}
             </select>
           </label>
           <button onClick={run} style={{ marginTop: "auto", background: "#4ecdc4", color: "#000" }}>▶ Ejecutar</button>
-          <button onClick={runComparison} className="secondary">⇄ Comparar</button>
+          <button onClick={runComparison} className="secondary">⇄ Comparar errores</button>
         </div>
       </div>
 
@@ -241,7 +271,8 @@ export default function Chapter2() {
       {rho !== null && (
         <div style={{ display: "flex", gap: 16 }}>
           <div style={{
-            flex: 1, background: rho < 1 ? "#4ecdc422" : "#ff6b6b22",
+            flex: 1,
+            background: rho < 1 ? "#4ecdc422" : "#ff6b6b22",
             border: `1px solid ${rho < 1 ? "#4ecdc444" : "#ff6b6b44"}`,
             borderRadius: 10, padding: 16
           }}>
@@ -253,7 +284,7 @@ export default function Chapter2() {
           </div>
           {result && (
             <div style={{ flex: 1, background: "var(--bg2)", border: "1px solid var(--border)", borderRadius: 10, padding: 16 }}>
-              <div style={{ fontSize: 12, color: "var(--text2)", marginBottom: 8 }}>Solución encontrada en {result.rows.length} iteraciones</div>
+              <div style={{ fontSize: 12, color: "var(--text2)", marginBottom: 8 }}>Solución — {result.rows.length} iteraciones</div>
               {result.x.map((v, i) => (
                 <div key={i} style={{ fontFamily: "var(--mono)", fontSize: 14, color: "#4ecdc4", marginBottom: 4 }}>
                   x<sub>{i+1}</sub> = {v.toFixed(8)}
@@ -281,24 +312,58 @@ export default function Chapter2() {
         </div>
       )}
 
-      {/* Comparison */}
+      {/* Comparison — 3 líneas de error por iteración */}
       {compData.length > 0 && (
         <div style={{ background: "var(--bg2)", borderRadius: 12, padding: 20, border: "1px solid var(--border)" }}>
-          <h3 style={{ fontSize: 14, color: "var(--text2)", marginBottom: 16 }}>Comparación de métodos — error final</h3>
-          <ResponsiveContainer width="100%" height={280}>
-            <BarChart data={compData}>
+          <h3 style={{ fontSize: 14, color: "var(--text2)", marginBottom: 4 }}>
+            Comparación de tipos de error — <span style={{ color: "#4ecdc4" }}>{method}</span>
+          </h3>
+          <p style={{ fontSize: 12, color: "var(--text3)", marginBottom: 16 }}>
+            Evolución del error relativo, absoluto y de condición (residual) a través de las iteraciones
+          </p>
+          <ResponsiveContainer width="100%" height={300}>
+            <LineChart data={compData} margin={{ top: 5, right: 20, bottom: 5, left: 10 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="#2a2a38" />
-              <XAxis dataKey="name" stroke="#5a5a78" tick={{ fontSize: 11 }} />
-              <YAxis type="number" scale="log" domain={[dataMin => Math.max(dataMin || 1e-16, 1e-16), 'dataMax']} stroke="#5a5a78" tick={{ fontSize: 11 }} />
-              <Tooltip contentStyle={{ background: "#111118", border: "1px solid #2a2a38", borderRadius: 8 }} formatter={value => typeof value === 'number' ? value.toExponential(3) : value} />
-              <Bar dataKey="error">
-                {compData.map((entry, index) => (
-                  <Cell key={entry.name} fill={COLORS[index % COLORS.length]} />
-                ))}
-                <LabelList dataKey="error" position="top" formatter={value => typeof value === 'number' ? value.toExponential(2) : ''} />
-              </Bar>
-            </BarChart>
+              <XAxis dataKey="iter" stroke="#5a5a78" tick={{ fontSize: 11 }}
+                label={{ value: "Iteración", position: "insideBottom", offset: -2, fill: "#5a5a78", fontSize: 11 }} />
+              <YAxis
+                scale="log"
+                domain={['auto', 'auto']}
+                stroke="#5a5a78"
+                tick={{ fontSize: 10 }}
+                tickFormatter={v => v > 0 ? v.toExponential(0) : ""}
+                allowDataOverflow
+              />
+              <Tooltip
+                contentStyle={{ background: "#111118", border: "1px solid #2a2a38", borderRadius: 8 }}
+                formatter={(value, name) => [value !== null ? value.toExponential(4) : "N/A", name]}
+                labelFormatter={l => `Iteración ${l}`}
+              />
+              <Legend wrapperStyle={{ fontSize: 12, paddingTop: 12 }} />
+              <Line type="monotone" dataKey="Relativo"  stroke="#7c6af7" dot={false} strokeWidth={2} connectNulls={false} />
+              <Line type="monotone" dataKey="Absoluto"  stroke="#4ecdc4" dot={false} strokeWidth={2} connectNulls={false} />
+              <Line type="monotone" dataKey="Condicion" stroke="#ff6b6b" dot={false} strokeWidth={2} connectNulls={false} strokeDasharray="5 3" />
+            </LineChart>
           </ResponsiveContainer>
+
+          {/* Resumen valores finales */}
+          <div style={{ display: "flex", gap: 12, marginTop: 16 }}>
+            {[
+              { label: "Error Relativo final",        key: "Relativo",  color: "#7c6af7" },
+              { label: "Error Absoluto final",        key: "Absoluto",  color: "#4ecdc4" },
+              { label: "Error Condición final (res)", key: "Condicion", color: "#ff6b6b" },
+            ].map(({ label, key, color }) => {
+              const last = [...compData].reverse().find(d => d[key] !== null);
+              return (
+                <div key={key} style={{ flex: 1, background: color + "11", border: `1px solid ${color}33`, borderRadius: 8, padding: "10px 14px" }}>
+                  <div style={{ fontSize: 11, color: "var(--text2)", marginBottom: 4 }}>{label}</div>
+                  <div style={{ fontFamily: "var(--mono)", fontSize: 13, color }}>
+                    {last ? last[key].toExponential(4) : "N/A"}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
         </div>
       )}
     </div>
