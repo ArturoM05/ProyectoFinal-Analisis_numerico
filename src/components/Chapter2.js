@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from "recharts";
+import { BarChart, Bar, Cell, LabelList, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
 
 const METHODS = ["Jacobi", "Gauss-Seidel", "SOR"];
 const ERROR_TYPES = ["Relativo", "Absoluto", "Condición"];
@@ -9,10 +9,15 @@ function parseMatrix(text) {
   return text.trim().split("\n").map(row => row.trim().split(/[\s,]+/).map(Number));
 }
 
+function parseVector(text) {
+  return text.trim().split(/[\s,]+/).map(Number);
+}
+
 function runIterative(A, b, method, w, x0, tol, maxIter, errType) {
   const n = A.length;
   let x = x0 ? [...x0] : new Array(n).fill(0);
   const rows = [];
+  rows.push({ iter: 0, ...Object.fromEntries(x.map((v, i) => [`x${i+1}`, +v.toFixed(6)])), error: "---" });
 
   for (let k = 1; k <= maxIter; k++) {
     const xOld = [...x];
@@ -36,11 +41,13 @@ function runIterative(A, b, method, w, x0, tol, maxIter, errType) {
 
 function calcError(x, xOld, A, b, errType) {
   if (errType === "Relativo") {
-    const num = Math.sqrt(x.reduce((s, v, i) => s + (v - xOld[i]) ** 2, 0));
-    const den = Math.sqrt(x.reduce((s, v) => s + v ** 2, 0)) || 1;
-    return num / den;
+    const maxX = Math.max(...x.map(v => Math.abs(v)));
+    const delta = Math.max(...x.map((v, i) => Math.abs(v - xOld[i])));
+    return maxX === 0 ? delta : delta / maxX;
   }
-  if (errType === "Absoluto") return Math.sqrt(x.reduce((s, v, i) => s + (v - xOld[i]) ** 2, 0));
+  if (errType === "Absoluto") {
+    return Math.max(...x.map((v, i) => Math.abs(v - xOld[i])));
+  }
   // Condición: residual
   const res = A.map((row, i) => b[i] - row.reduce((s, v, j) => s + v * x[j], 0));
   return Math.sqrt(res.reduce((s, v) => s + v ** 2, 0));
@@ -108,10 +115,11 @@ export default function Chapter2() {
   const [size, setSize] = useState(3);
   const [matA, setMatA] = useState(DEFAULT_A);
   const [vecB, setVecB] = useState(DEFAULT_B);
+  const [x0, setX0] = useState("0 0 0");
   const [w, setW] = useState("1.1");
   const [tol, setTol] = useState("1e-6");
   const [maxIter, setMaxIter] = useState("100");
-  const [errType, setErrType] = useState("Relativo");
+  const [errType, setErrType] = useState("Absoluto");
   const [result, setResult] = useState(null);
   const [rho, setRho] = useState(null);
   const [compData, setCompData] = useState([]);
@@ -122,10 +130,12 @@ export default function Chapter2() {
     try {
       const A = parseMatrix(matA);
       const b = parseMatrix(vecB).flat();
+      const x0Vec = parseVector(x0);
       const n = A.length;
       if (A.some(r => r.length !== n) || b.length !== n) throw new Error("Dimensiones incorrectas");
+      if (x0Vec.length !== n || x0Vec.some(isNaN)) throw new Error("x0 debe tener " + n + " valores numéricos");
       const t = parseFloat(tol), m = parseInt(maxIter), wVal = parseFloat(w);
-      const res = runIterative(A, b, method, wVal, null, t, m, errType);
+      const res = runIterative(A, b, method, wVal, x0Vec, t, m, errType);
       setResult({ ...res, n });
       const rhoVal = spectralRadius(A, method, wVal);
       setRho(rhoVal);
@@ -137,17 +147,19 @@ export default function Chapter2() {
       const A = parseMatrix(matA);
       const b = parseMatrix(vecB).flat();
       const t = parseFloat(tol), m = parseInt(maxIter), wVal = parseFloat(w);
+      const x0Vec = parseVector(x0);
       const methods = [
-        { name: "Jacobi", res: runIterative(A, b, "Jacobi", 1, null, t, m, errType) },
-        { name: "Gauss-Seidel", res: runIterative(A, b, "Gauss-Seidel", 1, null, t, m, errType) },
-        { name: "SOR", res: runIterative(A, b, "SOR", wVal, null, t, m, errType) },
+        { name: "Jacobi", res: runIterative(A, b, "Jacobi", 1, x0Vec, t, m, errType) },
+        { name: "Gauss-Seidel", res: runIterative(A, b, "Gauss-Seidel", 1, x0Vec, t, m, errType) },
+        { name: "SOR", res: runIterative(A, b, "SOR", wVal, x0Vec, t, m, errType) },
       ];
-      const maxLen = Math.max(...methods.map(m => m.res.rows.length));
-      const comp = Array.from({ length: maxLen }, (_, i) => ({ iter: i + 1 }));
-      methods.forEach(({ name, res }) => {
-        res.rows.forEach(r => { if (comp[r.iter - 1]) comp[r.iter - 1][name] = typeof r.error === "number" ? r.error : null; });
+      const comp = methods.map(({ name, res }) => {
+        const last = res.rows[res.rows.length - 1];
+        const finalError = last && typeof last.error === "number" && isFinite(last.error) ? last.error : null;
+        return { name, error: finalError };
       });
-      setCompData(comp.slice(0, 50));
+      console.log("Chapter2 comparison data:", comp);
+      setCompData(comp);
     } catch (e) { setError("Error comparación: " + e.message); }
   };
 
@@ -176,7 +188,9 @@ export default function Chapter2() {
       {/* Help */}
       <div style={{ background: "#4ecdc411", border: "1px solid #4ecdc433", borderRadius: 10, padding: "12px 16px", fontSize: 13, color: "#7eddd8" }}>
         💡 Ingresa la matriz A fila por fila (valores separados por espacios) y el vector b, uno por línea.
-        Tamaño máximo: 8×8. {method === "SOR" && "Para SOR se recomienda w ∈ (1, 2) para acelerar convergencia."}
+        Tamaño máximo: 8×8.
+        <br />Para el método de Jacobi usa <strong>Error Absoluto</strong> si quieres el "mayor delta" entre iteraciones como en la tabla del profe.
+        {method === "SOR" && " Para SOR se recomienda w ∈ (1, 2) para acelerar convergencia."}
       </div>
 
       {/* Inputs */}
@@ -189,6 +203,10 @@ export default function Chapter2() {
           <label style={{ display: "flex", flexDirection: "column", gap: 6 }}>
             <span style={{ fontSize: 12, color: "var(--text2)", fontFamily: "var(--mono)" }}>Vector b (un valor por línea)</span>
             <textarea value={vecB} onChange={e => setVecB(e.target.value)} rows={3} style={{ resize: "vertical", fontFamily: "var(--mono)", fontSize: 13 }} />
+          </label>
+          <label style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            <span style={{ fontSize: 12, color: "var(--text2)", fontFamily: "var(--mono)" }}>Vector inicial x₀</span>
+            <input value={x0} onChange={e => setX0(e.target.value)} placeholder="2 2 2 2" />
           </label>
         </div>
         <div style={{ background: "var(--bg2)", borderRadius: 12, padding: 20, border: "1px solid var(--border)", display: "flex", flexDirection: "column", gap: 12 }}>
@@ -266,16 +284,20 @@ export default function Chapter2() {
       {/* Comparison */}
       {compData.length > 0 && (
         <div style={{ background: "var(--bg2)", borderRadius: 12, padding: 20, border: "1px solid var(--border)" }}>
-          <h3 style={{ fontSize: 14, color: "var(--text2)", marginBottom: 16 }}>Comparación de métodos</h3>
+          <h3 style={{ fontSize: 14, color: "var(--text2)", marginBottom: 16 }}>Comparación de métodos — error final</h3>
           <ResponsiveContainer width="100%" height={280}>
-            <LineChart data={compData}>
+            <BarChart data={compData}>
               <CartesianGrid strokeDasharray="3 3" stroke="#2a2a38" />
-              <XAxis dataKey="iter" stroke="#5a5a78" tick={{ fontSize: 11 }} />
-              <YAxis scale="log" stroke="#5a5a78" tick={{ fontSize: 11 }} />
-              <Tooltip contentStyle={{ background: "#111118", border: "1px solid #2a2a38", borderRadius: 8 }} />
-              <Legend />
-              {METHODS.map((m, i) => <Line key={m} type="monotone" dataKey={m} stroke={COLORS[i]} dot={false} strokeWidth={2} connectNulls={false} />)}
-            </LineChart>
+              <XAxis dataKey="name" stroke="#5a5a78" tick={{ fontSize: 11 }} />
+              <YAxis type="number" scale="log" domain={[dataMin => Math.max(dataMin || 1e-16, 1e-16), 'dataMax']} stroke="#5a5a78" tick={{ fontSize: 11 }} />
+              <Tooltip contentStyle={{ background: "#111118", border: "1px solid #2a2a38", borderRadius: 8 }} formatter={value => typeof value === 'number' ? value.toExponential(3) : value} />
+              <Bar dataKey="error">
+                {compData.map((entry, index) => (
+                  <Cell key={entry.name} fill={COLORS[index % COLORS.length]} />
+                ))}
+                <LabelList dataKey="error" position="top" formatter={value => typeof value === 'number' ? value.toExponential(2) : ''} />
+              </Bar>
+            </BarChart>
           </ResponsiveContainer>
         </div>
       )}

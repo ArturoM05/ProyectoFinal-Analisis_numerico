@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from "recharts";
+import { LineChart, Line, BarChart, Bar, Cell, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, LabelList } from "recharts";
 import * as math from "mathjs";
 
 const METHODS = ["Bisección", "Regla Falsa", "Punto Fijo", "Newton-Raphson", "Secante", "Raíces Múltiples"];
@@ -17,7 +17,7 @@ function bisection(f, a, b, tol, maxIter, errType) {
   for (let i = 1; i <= maxIter && err > tol; i++) {
     xr = (xa + xb) / 2;
     const fa = safeEval(f, xa), fb = safeEval(f, xb), fr = safeEval(f, xr);
-    err = calcError(xr, rows.length > 0 ? rows[rows.length - 1].xr : null, f, errType);
+    err = calcError(xr, rows.length > 0 ? rows[rows.length - 1].xr : null, f, errType, xr, rows.length > 0 ? rows[rows.length - 1].error : Infinity);
     rows.push({ iter: i, xa: +xa.toFixed(6), xb: +xb.toFixed(6), xr: +xr.toFixed(6), fr: +fr.toFixed(6), error: isFinite(err) ? +err.toFixed(6) : "---" });
     if (fa * fr < 0) xb = xr; else xa = xr;
     if (Math.abs(fr) < 1e-12) break;
@@ -32,7 +32,7 @@ function falsePosition(f, a, b, tol, maxIter, errType) {
     const fa = safeEval(f, xa), fb = safeEval(f, xb);
     xr = xb - fb * (xa - xb) / (fa - fb);
     const fr = safeEval(f, xr);
-    err = calcError(xr, rows.length > 0 ? rows[rows.length - 1].xr : null, f, errType);
+    err = calcError(xr, rows.length > 0 ? rows[rows.length - 1].xr : null, f, errType, xr, rows.length > 0 ? rows[rows.length - 1].error : Infinity);
     rows.push({ iter: i, xa: +xa.toFixed(6), xb: +xb.toFixed(6), xr: +xr.toFixed(6), fr: +fr.toFixed(6), error: isFinite(err) ? +err.toFixed(6) : "---" });
     if (fa * fr < 0) xb = xr; else xa = xr;
     if (Math.abs(fr) < 1e-12) break;
@@ -42,11 +42,18 @@ function falsePosition(f, a, b, tol, maxIter, errType) {
 
 function fixedPoint(g, x0, tol, maxIter, errType) {
   const rows = [];
-  let x = x0, xNew, err = Infinity;
-  for (let i = 1; i <= maxIter && err > tol; i++) {
-    xNew = safeEval(g, x);
+  let x = x0;
+  let err = tol + 1;
+  for (let i = 0; i <= maxIter && err > tol; i++) {
+    const fx = safeEval(g, x) - x;
+    rows.push({
+      iter: i,
+      x: +x.toPrecision(15),
+      fx: +fx.toPrecision(15),
+      error: isFinite(err) ? +err.toPrecision(15) : "---"
+    });
+    const xNew = safeEval(g, x);
     err = calcError(xNew, x, null, errType);
-    rows.push({ iter: i, x: +x.toFixed(6), xNew: +xNew.toFixed(6), error: isFinite(err) ? +err.toFixed(6) : "---" });
     x = xNew;
     if (!isFinite(x)) break;
   }
@@ -61,7 +68,7 @@ function newtonRaphson(f, x0, tol, maxIter, errType) {
     const dfx = (safeEval(f, x + 1e-7) - safeEval(f, x - 1e-7)) / (2e-7);
     if (Math.abs(dfx) < 1e-14) break;
     const xNew = x - fx / dfx;
-    err = calcError(xNew, x, f, errType);
+    err = calcError(xNew, x, f, errType, x, err);
     rows.push({ iter: i, x: +x.toFixed(6), fx: +fx.toFixed(6), dfx: +dfx.toFixed(6), xNew: +xNew.toFixed(6), error: isFinite(err) ? +err.toFixed(6) : "---" });
     x = xNew;
     if (Math.abs(fx) < 1e-12) break;
@@ -76,7 +83,7 @@ function secant(f, x0, x1, tol, maxIter, errType) {
     const fa = safeEval(f, xa), fb = safeEval(f, xb);
     if (Math.abs(fb - fa) < 1e-14) break;
     const xNew = xb - fb * (xb - xa) / (fb - fa);
-    err = calcError(xNew, xb, f, errType);
+    err = calcError(xNew, xb, f, errType, xb, err);
     rows.push({ iter: i, xa: +xa.toFixed(6), xb: +xb.toFixed(6), fb: +fb.toFixed(6), xNew: +xNew.toFixed(6), error: isFinite(err) ? +err.toFixed(6) : "---" });
     xa = xb; xb = xNew;
     if (Math.abs(fb) < 1e-12) break;
@@ -94,7 +101,7 @@ function multipleRoots(f, x0, tol, maxIter, errType) {
     const denom = dfx * dfx - fx * d2fx;
     if (Math.abs(denom) < 1e-14) break;
     const xNew = x - fx * dfx / denom;
-    err = calcError(xNew, x, f, errType);
+    err = calcError(xNew, x, f, errType, x, err);
     rows.push({ iter: i, x: +x.toFixed(6), fx: +fx.toFixed(6), xNew: +xNew.toFixed(6), error: isFinite(err) ? +err.toFixed(6) : "---" });
     x = xNew;
     if (Math.abs(fx) < 1e-12) break;
@@ -102,14 +109,17 @@ function multipleRoots(f, x0, tol, maxIter, errType) {
   return { rows, root: x };
 }
 
-function calcError(xNew, xOld, f, errType) {
+function calcError(xNew, xOld, f, errType, xCurrent = null, prevError = Infinity) {
   if (xOld === null) return Infinity;
   if (errType === "Relativo") return Math.abs((xNew - xOld) / (xNew || 1));
   if (errType === "Absoluto") return Math.abs(xNew - xOld);
   if (errType === "Condición" && f) {
-    const fx = safeEval(f, xNew);
-    const dfx = (safeEval(f, xNew + 1e-7) - safeEval(f, xNew - 1e-7)) / (2e-7);
-    return Math.abs(xNew * dfx / (fx || 1));
+    const x = xCurrent !== null ? xCurrent : xNew;
+    const fx = safeEval(f, x);
+    if (Math.abs(fx) < 1e-14) return isFinite(prevError) ? prevError : Infinity;
+    const dfx = (safeEval(f, x + 1e-7) - safeEval(f, x - 1e-7)) / (2e-7);
+    if (Math.abs(dfx) < 1e-14) return isFinite(prevError) ? prevError : Infinity;
+    return Math.abs(x * dfx / fx);
   }
   return Math.abs(xNew - xOld);
 }
@@ -173,27 +183,45 @@ export default function Chapter1() {
     const methods = [
       { name: "Bisección", fn: () => bisection(fx, parseFloat(a), parseFloat(b), t, m, errType) },
       { name: "Regla Falsa", fn: () => falsePosition(fx, parseFloat(a), parseFloat(b), t, m, errType) },
-      { name: "Newton", fn: () => newtonRaphson(fx, parseFloat(x0), t, m, errType) },
+      { name: "Newton-Raphson", fn: () => newtonRaphson(fx, parseFloat(x0), t, m, errType) },
       { name: "Secante", fn: () => secant(fx, parseFloat(x0), parseFloat(x1), t, m, errType) },
     ];
-    const maxLen = m;
-    const comp = Array.from({ length: maxLen }, (_, i) => ({ iter: i + 1 }));
-    methods.forEach(({ name, fn }) => {
+    const comp = methods.map(({ name, fn }) => {
       try {
         const { rows } = fn();
-        rows.forEach(r => { if (comp[r.iter - 1]) comp[r.iter - 1][name] = typeof r.error === "number" ? r.error : null; });
-      } catch { }
+        const last = rows[rows.length - 1];
+        const finalError = last && typeof last.error === "number" && isFinite(last.error) ? last.error : null;
+        return { name, error: finalError };
+      } catch (err) {
+        console.error(`Comparación ${name} falló`, err);
+        return { name, error: null };
+      }
     });
-    setCompData(comp.filter(d => Object.keys(d).length > 1).slice(0, 30));
+    console.log("Chapter1 comparison data:", comp);
+    setCompData(comp.filter(entry => entry.error !== null || entry.error === 0));
   };
 
   const cols = {
     "Bisección": ["iter", "xa", "xb", "xr", "fr", "error"],
     "Regla Falsa": ["iter", "xa", "xb", "xr", "fr", "error"],
-    "Punto Fijo": ["iter", "x", "xNew", "error"],
+    "Punto Fijo": ["iter", "x", "fx", "error"],
     "Newton-Raphson": ["iter", "x", "fx", "dfx", "xNew", "error"],
     "Secante": ["iter", "xa", "xb", "fb", "xNew", "error"],
     "Raíces Múltiples": ["iter", "x", "fx", "xNew", "error"],
+  };
+
+  const colLabels = {
+    iter: "i",
+    xa: "a",
+    xb: "b",
+    xr: "xr",
+    fr: "f(r)",
+    x: "x_i",
+    fx: "F(x_i)",
+    xNew: "x_{i+1}",
+    dfx: "f'(x)",
+    fb: "f(b)",
+    error: "E_i",
   };
 
   return (
@@ -312,7 +340,7 @@ export default function Chapter1() {
           </div>
           <div style={{ overflowX: "auto" }}>
             <table>
-              <thead><tr>{cols[method].map(c => <th key={c}>{c}</th>)}</tr></thead>
+              <thead><tr>{cols[method].map(c => <th key={c}>{colLabels[c] || c}</th>)}</tr></thead>
               <tbody>{result.rows.map((row, i) => (
                 <tr key={i}>{cols[method].map(c => <td key={c}>{row[c] ?? "---"}</td>)}</tr>
               ))}</tbody>
@@ -324,18 +352,20 @@ export default function Chapter1() {
       {/* Comparison */}
       {compData.length > 0 && (
         <div style={{ background: "var(--bg2)", borderRadius: 12, padding: 20, border: "1px solid var(--border)" }}>
-          <h3 style={{ fontSize: 14, color: "var(--text2)", marginBottom: 16 }}>Comparación de métodos — error {errType.toLowerCase()}</h3>
+          <h3 style={{ fontSize: 14, color: "var(--text2)", marginBottom: 16 }}>Comparación de métodos — error final {errType.toLowerCase()}</h3>
           <ResponsiveContainer width="100%" height={280}>
-            <LineChart data={compData}>
+            <BarChart data={compData}>
               <CartesianGrid strokeDasharray="3 3" stroke="#2a2a38" />
-              <XAxis dataKey="iter" stroke="#5a5a78" tick={{ fontSize: 11 }} label={{ value: "Iteración", position: "insideBottom", offset: -5, fill: "#5a5a78", fontSize: 11 }} />
-              <YAxis scale="log" stroke="#5a5a78" tick={{ fontSize: 11 }} />
-              <Tooltip contentStyle={{ background: "#111118", border: "1px solid #2a2a38", borderRadius: 8 }} />
-              <Legend />
-              {["Bisección", "Regla Falsa", "Newton", "Secante"].map((m, i) => (
-                <Line key={m} type="monotone" dataKey={m} stroke={COLORS[i]} dot={false} strokeWidth={2} connectNulls={false} />
-              ))}
-            </LineChart>
+              <XAxis dataKey="name" stroke="#5a5a78" tick={{ fontSize: 11 }} />
+              <YAxis type="number" scale="log" domain={[dataMin => Math.max(dataMin || 1e-16, 1e-16), 'dataMax']} stroke="#5a5a78" tick={{ fontSize: 11 }} />
+              <Tooltip contentStyle={{ background: "#111118", border: "1px solid #2a2a38", borderRadius: 8 }} formatter={value => typeof value === 'number' ? value.toExponential(3) : value} />
+              <Bar dataKey="error">
+                {compData.map((entry, index) => (
+                  <Cell key={entry.name} fill={COLORS[index % COLORS.length]} />
+                ))}
+                <LabelList dataKey="error" position="top" formatter={value => typeof value === 'number' ? value.toExponential(2) : ''} />
+              </Bar>
+            </BarChart>
           </ResponsiveContainer>
         </div>
       )}
